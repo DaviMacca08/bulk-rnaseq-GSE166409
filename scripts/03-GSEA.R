@@ -9,11 +9,6 @@
 # Collections  : KEGG, Reactome, GO (BP, MF, CC; redundancy-reduced),
 #                MSigDB Hallmark / C3 (TFT:GTRD) / C7 / C8
 # Outputs      : GSEA tables (CSV), lollipop plots, Hallmark enrichment plots
-#
-# NOTE (commercial use): KEGG data are subject to KEGG's licence terms
-# for non-academic use. Verify before delivering KEGG-derived results
-# in a paid service; Reactome, GO and MSigDB-CC-BY collections are less
-# restrictive (check each collection's licence).
 # =========================================================
 
 
