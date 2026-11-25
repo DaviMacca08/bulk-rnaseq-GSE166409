@@ -8,7 +8,7 @@
 # Gene lists   : all / up / down DEGs, as defined in script 01
 # Databases    : GO (BP, MF, CC; redundancy-reduced), KEGG, Reactome, Hallmark
 # Outputs      : ORA tables (CSV) and dot plots per database and direction
-#
+
 # =========================================================
 
 
