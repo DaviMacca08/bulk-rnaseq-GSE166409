@@ -4,7 +4,7 @@
 # =========================================================
 
 local({
-  root <- Sys.getenv("/Users/davidemaccarrone/Desktop/Bioinformatics/MyProjects/Bulk_RNASeq_Susanna", unset = NA_character_)
+  root <- Sys.getenv("/Users/davidemaccarrone/Desktop/Bioinformatics/MyProjects/Bulk_RNASeq_GSE166409", unset = NA_character_)
   if (is.na(root) || !nzchar(root)) root <- here::here()
 
   setup_files <- c(
