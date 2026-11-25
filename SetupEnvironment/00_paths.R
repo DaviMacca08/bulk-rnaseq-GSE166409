@@ -2,7 +2,7 @@
 # Project paths (single source of truth)
 # =========================================================
 
-project_root <- Sys.getenv("/Users/davidemaccarrone/Desktop/Bioinformatics/MyProjects/Bulk_RNASeq_Susanna", unset = NA_character_)
+project_root <- Sys.getenv("/Users/davidemaccarrone/Desktop/Bioinformatics/MyProjects/Bulk_RNASeq_GSE166409", unset = NA_character_)
 
 if (is.na(project_root) || !nzchar(project_root)) {
   if (!requireNamespace("here", quietly = TRUE)) {
