@@ -9,8 +9,6 @@
 # Databases    : GO (BP, MF, CC; redundancy-reduced), KEGG, Reactome, Hallmark
 # Outputs      : ORA tables (CSV) and dot plots per database and direction
 #
-# NOTE (commercial use): verify KEGG licence terms before delivering
-# KEGG-derived results in a paid service.
 # =========================================================
 
 
