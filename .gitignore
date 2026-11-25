@@ -10,11 +10,6 @@
 .DS_Store
 **/.DS_Store
 
-# Data: ignore contents of data/ but keep small metadata files
-
-data/*
-!data/metadata/
-
 # Sequencing and large files anywhere in the repository
 
 *.fastq
