@@ -1,0 +1,442 @@
+---
+title: "End-to-End Bulk RNA-seq Analysis Framework: From Raw Counts to Differential Expression and Functional Enrichment"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+![R](https://img.shields.io/badge/R-4.6.0-blue) ![Bulk RNA-seq](https://img.shields.io/badge/Bulk--RNA--seq-DESeq2-purple) ![Enrichment](https://img.shields.io/badge/Enrichment-ORA%20%2B%20GSEA-green) ![Status](https://img.shields.io/badge/status-completed-success)
+
+------------------------------------------------------------------------
+
+# 💼 Bioinformatics Service Demonstration
+
+This repository presents a modular **end-to-end bulk RNA-seq analysis pipeline** designed for the systematic characterization of transcriptional differences between two biological conditions starting from a gene-level raw count matrix.
+
+The workflow covers the main analytical stages required for a reproducible differential expression project, from count-matrix validation and sample-level quality control to differential expression testing, functional enrichment analysis and a structured analytical report.
+
+The project is structured as a practical bioinformatics workflow suitable for:
+
+- differential expression analysis of two-group bulk RNA-seq datasets
+- quality assessment of RNA-seq count data and detection of confounding factors
+- identification of genes associated with experimental or clinical conditions
+- functional characterization of gene lists and ranked gene profiles
+- comparison of results with published evidence
+- reproducible analysis of public or client-provided RNA-seq data
+- development of client-oriented transcriptomics workflows
+
+**Core analytical functionalities implemented in the pipeline include:**
+
+- retrieval of sample metadata from GEO using GEOquery, with automatic group assignment and a printed audit table
+- validation of the raw count matrix (integer values, no missing or negative values, no duplicated genes)
+- expression filtering based on the size of the smallest experimental group
+- optional exclusion of X/Y-linked genes when sex is confounded with the experimental condition
+- differential expression analysis with DESeq2 (negative binomial model, Wald test)
+- log2 fold change shrinkage with apeglm
+- multiple-testing correction using Benjamini–Hochberg FDR
+- variance-stabilizing transformation (VST), with and without the experimental design
+- sample-level quality control (library size, detected genes, mean correlation) and robust outlier screening when the sample size allows it
+- exploratory data analysis: PCA, scree plot, hierarchical clustering and sample-correlation heatmap
+- volcano plot, MA plot and heatmap of the top differentially expressed genes
+- over-representation analysis (ORA) on all, up-regulated and down-regulated genes
+- Gene Ontology (BP, MF, CC) enrichment with redundancy reduction, KEGG, Reactome and MSigDB Hallmark
+- gene set enrichment analysis (GSEA) on the full ranked gene list (Wald statistic)
+- GSEA against KEGG, Reactome, Gene Ontology and MSigDB Hallmark, C3, C7 and C8 collections
+- targeted analysis of genes of interest, genes of a genomic locus and literature-reported terms
+- ridge plot of the fold changes of leading-edge genes
+- a Quarto report in which numbers, tables and figures are read directly from the result files
+
+**📤 Deliverables**
+
+- Quality-control summaries and sample-level metrics
+- Normalized counts and differential expression tables
+- Over-representation and gene set enrichment result tables
+- Structured visualization (QC, EDA, differential expression, enrichment)
+- Reproducible analytical scripts and configuration
+- Analytical report documenting the complete workflow
+
+------------------------------------------------------------------------
+
+# 📊 Case Study
+
+This repository uses a publicly available human PBMC bulk RNA-seq dataset as a demonstration case for the implementation of a reproducible differential expression workflow.
+
+**Organism:** Homo sapiens
+
+**Biological system:** Peripheral blood mononuclear cells (PBMCs)
+
+**Cohort:** 6 samples: 3 affected individuals with familial thrombocytopenia (THR) and 3 unrelated healthy controls (HC)
+
+**Experimental groups:** THR and HC (comparison THR vs HC, HC as reference)
+
+**Sequencing approach:** bulk RNA-seq (modified SMART-seq2 libraries), Illumina NextSeq 500
+
+**Public dataset:** NCBI Gene Expression Omnibus (GEO), GSE166409
+
+**Source study:** Wahlster et al. (2021), *Journal of Experimental Medicine*, DOI: 10.1084/jem.20210444
+
+**Input data:** gene-level raw count matrix (GRCh38.p13, Entrez Gene identifiers)
+
+The dataset comes from a study of a family with thrombocytopenia caused by a complex structural variant producing a WAC-ANKRD26 fusion transcript. It provides a suitable case study for demonstrating an end-to-end differential expression workflow on a small cohort with specific analytical challenges (small sample size, related affected individuals, confounded sex and PBMC composition). Only the gene-level count matrix is analyzed here: the fusion transcript itself is not characterized.
+
+------------------------------------------------------------------------
+
+# 🧬 Biological Context
+
+Bulk RNA-seq measures the average expression of every gene across all the cells in a sample, and provides a genome-wide view of the transcriptional differences between conditions.
+
+The analysis of a small bulk RNA-seq dataset requires consideration of several characteristics:
+
+- with few replicates, statistical power is limited and effect-size estimates for lowly expressed genes are unstable
+- expression differences can reflect the cellular composition of the sample and not only changes in gene regulation
+- known and unknown confounders (for example sex, age, family relationships, batch) can coincide with the experimental condition
+- gene-set analyses are sensitive to the choice of background genes and to redundancy between gene sets
+- results from different quantification and annotation pipelines are not directly comparable
+
+The pipeline therefore separates **data validation, statistical modelling, quality assessment and functional interpretation** into distinct analytical stages, and documents the choices that affect the results.
+
+The count-based negative binomial framework of DESeq2 is used for testing, because raw counts carry the information on precision that normalized or transformed values lose. Transformed values (VST) are used only for visualization and sample-level assessment.
+
+------------------------------------------------------------------------
+
+# 📌 Analytical Framework
+
+The complete workflow can be summarized as:
+
+**raw count matrix → validation → expression filtering → DESeq2 → log2FC shrinkage → quality control and exploratory analysis → differential expression → ORA → GSEA → targeted analysis → report**
+
+Each stage writes structured outputs that are read by the subsequent scripts.
+
+## Sample Metadata and Count Matrix
+
+Sample metadata are retrieved from GEO and all the sample characteristics are collapsed into a single string used to assign each sample to its group by keyword. The mapping is printed for manual inspection, which is the point where confounders such as sex, age or batch should be checked.
+
+The raw count matrix is imported and validated before analysis:
+
+- sample names matched to the metadata (columns are reordered by name)
+- no missing values, no negative values, no duplicated gene identifiers
+- all values are integers (as required for raw counts)
+
+## Filtering and Handling of Confounders
+
+Genes are retained if they have at least 10 reads in at least as many samples as the smallest experimental group.
+
+When sex is fully confounded with the experimental condition, it cannot be included in the model. In this case genes on chromosomes X and Y are excluded before model fitting (controlled by `cfg$exclude_sex_chr`). This is a design-based decision documented in the report, together with its limits: autosomal sex-biased genes remain, and genuine X-linked signals are lost.
+
+## Normalization and Transformation
+
+Normalization uses the DESeq2 size factors (median-of-ratios). Two VST matrices are produced:
+
+- `blind = TRUE` for quality control and exploratory analysis, so that group separation is not induced by the transformation
+- `blind = FALSE` for the heatmap of differentially expressed genes
+
+## Quality Control and Exploratory Analysis
+
+Sample-level quality control includes:
+
+- library size and number of detected genes
+- median VST expression and mean correlation with the other samples
+- robust z-score outlier screening (\|z\| \> 3.5, median and MAD), applied only when at least eight samples are available; with fewer samples the assessment is visual and no sample is removed automatically
+- DESeq2 dispersion plot and distribution of raw p-values as model diagnostics
+
+Exploratory analysis includes PCA on the 500 most variable genes, a scree plot, hierarchical clustering and a sample-correlation heatmap.
+
+------------------------------------------------------------------------
+
+# 📈 Differential Expression Analysis
+
+Differential expression is tested with DESeq2 using the design `~ condition`, with the contrast defined as case versus reference.
+
+The analysis includes:
+
+- Wald test and Benjamini–Hochberg adjustment (with DESeq2 independent filtering)
+- log2 fold change shrinkage with **apeglm** for stable effect-size estimates
+- classification of differentially expressed genes with FDR \< 0.05 **and** an absolute *shrunken* log2 fold change \> 1
+- annotation with gene symbols and names (`org.Hs.eg.db`)
+- export of the complete result table (raw and shrunken log2 fold change, Wald statistic, p-values), of the DEG subset and of the normalized counts
+- volcano plot, MA plot and heatmap of the top DEGs (row Z-score of VST values)
+
+Two gene universes are saved for the enrichment analyses: the genes that passed the expression filter and the genes with an adjusted p-value (tested genes).
+
+------------------------------------------------------------------------
+
+# 📊 Functional Enrichment Analysis
+
+## Over-Representation Analysis (ORA)
+
+ORA is run on three gene lists: all DEGs, up-regulated DEGs and down-regulated DEGs.
+
+- databases: Gene Ontology (BP, MF and CC, each tested separately), KEGG, Reactome and MSigDB Hallmark
+- background universe: the genes tested in the differential expression analysis (not the whole genome)
+- gene sets with 10 to 500 genes, Benjamini–Hochberg adjustment, FDR \< 0.05
+- redundant GO terms merged with `simplify()` (semantic similarity cutoff 0.7)
+- results exported with gene symbols and visualized as dot plots of the top terms
+
+## Gene Set Enrichment Analysis (GSEA)
+
+GSEA uses all the genes ranked by the Wald statistic of the unshrunken results, so no arbitrary DEG threshold is needed.
+
+- collections: KEGG, Reactome, Gene Ontology (BP, MF, CC) and MSigDB Hallmark, C3 (TF targets, GTRD), C7 (immunologic signatures) and C8 (cell-type signatures)
+- clusterProfiler/ReactomePA for KEGG, GO and Reactome; **fgsea** for the MSigDB collections
+- gene sets with 15 to 500 genes, Benjamini–Hochberg adjustment
+- GO terms simplified separately for up- and down-regulated terms (cutoff 0.7); complete tables are also exported
+- complete result tables for every collection (the significance filter is applied only for the plots)
+- lollipop plots (top terms per direction, FDR \< 0.05, minimum leading-edge size) and enrichment plots for the top Hallmark sets
+
+## Targeted Analysis
+
+An additional script performs the project-specific checks needed to relate the results to the source study:
+
+- expression and rank of genes of interest and of the other genes in a genomic locus
+- ridge plot of the shrunken log2 fold change of the leading-edge genes of the top GO terms
+- lookup, in the complete GSEA table, of the terms reported in the source study
+
+The interpretation of the results, including the comparison with published evidence, is presented in the analytical report.
+
+------------------------------------------------------------------------
+
+# 🗂 Repository Contents
+
+The repository is organized into four independent analysis scripts, executed in order, and a shared setup. Each script reads the files produced by the previous ones and writes its own outputs and the session information of its run.
+
+| Script | Analysis | Main outputs |
+|:------------------|:------------------|:---------------------------------|
+| `01-DEG_v2.R` | Metadata retrieval, count validation, filtering, DESeq2, shrinkage, QC, EDA and DEG visualization | DEG tables, universes, QC table, normalized counts, DESeq2 object; QC, EDA and DEG plots |
+| `02-ORA_v2.R` | Over-representation analysis (GO, KEGG, Reactome, Hallmark) on all, up and down DEGs | ORA tables (CSV) and dot plots |
+| `03-GSEA_v2.R` | GSEA on the ranked gene list (KEGG, Reactome, GO, Hallmark, C3, C7, C8) | GSEA tables (complete and GO full), lollipop plots, enrichment plots |
+| `04-Advanced_analysis.R` | Genes of interest, locus genes, ridge plot, check of literature terms | Gene tables, expression plot, ridge plot, term table |
+
+The overall flow is:
+
+**count matrix → differential expression → functional enrichment → targeted analysis**
+
+and, within each module:
+
+**analysis code → result tables → visualization outputs → report**
+
+## Outputs
+
+- **Figures** are saved in `results/plots/`, grouped by analytical module (QC, EDA, DEG, ORA, GSEA).
+- **Tables** (differential expression, QC, normalized counts, ORA, GSEA) are saved as CSV files in `results/tables/`, with subfolders for ORA and GSEA.
+- **Objects** (the DESeq2 object) are saved as RDS in `results/`.
+- **Logs** with the session information of each script are saved in `results/logs/`.
+
+## Report
+
+The results, figures and their biological interpretation are presented in the Quarto report in the `report/` directory, together with the methodological decisions (filters, thresholds, handling of confounders) and the limitations of the analysis. Numbers, tables and figures of the report are read from the result files. This README documents what the project contains and how to run it; it does not report results.
+
+## Reproducibility
+
+The workflow is designed around reproducible execution and transparent methodological tracking. The project environment is managed using **R and renv** (exact package versions are recorded in `renv.lock`), while paths, packages, seed, helper functions and all analysis parameters are centralized in the `SetupEnvironment/` directory. Thresholds, group labels and input files are defined once in `SetupEnvironment/04_config.R`. The random seed is fixed and the session information of every script is saved.
+
+------------------------------------------------------------------------
+
+# ▶️ Reproducing the Analysis
+
+1.  Clone the repository.
+2.  Restore the R environment with `renv::restore()`.
+3.  Download the raw count matrix `GSE166409_raw_counts_GRCh38.p13_NCBI.tsv.gz` from the supplementary files of the GEO record (<https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE166409>) and place it in `data/`. The location is defined by `counts_file` in `SetupEnvironment/04_config.R`.
+4.  Open the R project (or set the `PROJECT_ROOT` environment variable) so that the project root is found.
+5.  Run the four scripts in numerical order from a clean R session (see *Repository Contents*). An internet connection is required for the GEO metadata and for KEGG.
+6.  Render the report with Quarto: `quarto render report/Report_bulkRNASeq_GSE166409.qmd`.
+
+------------------------------------------------------------------------
+
+# 📁 Project Structure
+
+``` text
+Bulk_RNASeq_GSE166409/
+├── data/
+│   └── raw count matrix 
+│
+├── results/
+│   ├── plots/
+│   │   ├── QC/
+│   │   ├── EDA/
+│   │   ├── DEG/
+│   │   ├── ORA/
+│   │   └── GSEA/
+│   │
+│   ├── tables/
+│   │   ├── ORA_results/
+│   │   └── GSEA_results/
+│   │
+│   └── logs/
+│       └── Session information of each script
+│
+├── report/
+│   └── Report_bulkRNASeq_GSE166409.qmd
+│
+├── SetupEnvironment/
+│   ├── 00_paths.R
+│   ├── 01_environment.R
+│   ├── 02_seed.R
+│   ├── 03_helper_functions.R
+│   ├── 04_config.R
+│   ├── 05_helpers_enrichment.R
+│   └── setup.R
+│
+├── 01-DEG.R
+├── 02-ORA.R
+├── 03-GSEA.R
+├── 04-Advanced_analysis.R
+├── renv.lock
+└── README.md
+```
+
+------------------------------------------------------------------------
+
+# 🔬 Methodological Principles
+
+The workflow follows several principles relevant to reproducible RNA-seq analysis.
+
+### Count-based statistical modelling
+
+Testing is performed on raw counts with a negative binomial model. Normalized or transformed values (TPM, FPKM, VST) are not used for statistical testing.
+
+### Effect-size shrinkage
+
+The log2 fold change is shrunk with apeglm to stabilize estimates for lowly expressed or highly variable genes. The shrunken value defines the effect-size threshold of the DEGs, while the unshrunken Wald statistic is used to rank genes for GSEA.
+
+### Explicit handling of confounders
+
+Metadata are inspected at the beginning of the analysis, confounded variables are identified, and any exclusion of genes (for example X/Y-linked genes) is a documented, design-based decision and not a post hoc choice.
+
+### Sample-level quality assessment
+
+Quality is assessed with explicit metrics and diagnostic plots. Automatic outlier flags are used only when the number of samples makes them statistically meaningful; otherwise the assessment is visual and no sample is removed automatically.
+
+### Appropriate background for enrichment
+
+Over-representation is evaluated against the genes that could have been detected as differentially expressed, not against the whole genome.
+
+### Complete results before filtering
+
+Complete result tables are exported for all analyses, and significance filters are applied for plots and summaries. Redundancy of GO terms is reduced separately for up- and down-regulated terms.
+
+### Multiple-testing control
+
+Benjamini–Hochberg FDR correction is applied to differential expression and to every enrichment analysis.
+
+### Reproducibility
+
+The project separates:
+
+- environment configuration
+- path management
+- input/output utilities
+- analysis parameters
+- analytical scripts
+- result tables
+- visualization outputs
+- analytical report
+
+This structure facilitates reproducibility, auditing and adaptation of the workflow to new datasets.
+
+------------------------------------------------------------------------
+
+# 📚 References
+
+- Wahlster L, Verboon JM, Ludwig LS, et al. (2021). **Familial thrombocytopenia due to a complex structural variant resulting in a WAC-ANKRD26 fusion transcript.** *Journal of Experimental Medicine*, 218(6):e20210444. DOI: 10.1084/jem.20210444.
+
+- Love MI, Huber W, Anders S. (2014). **Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2.** *Genome Biology*, 15:550. DOI: 10.1186/s13059-014-0550-8.
+
+- Zhu A, Ibrahim JG, Love MI. (2019). **Heavy-tailed prior distributions for sequence count data: removing the noise and preserving large differences.** *Bioinformatics*, 35(12):2084–2092. DOI: 10.1093/bioinformatics/bty895.
+
+- Wu T, Hu E, Xu S, et al. (2021). **clusterProfiler 4.0: A universal enrichment tool for interpreting omics data.** *The Innovation*, 2(3):100141. DOI: 10.1016/j.xinn.2021.100141.
+
+- Yu G, He QY. (2016). **ReactomePA: an R/Bioconductor package for reactome pathway analysis and visualization.** *Molecular BioSystems*, 12:477–479. DOI: 10.1039/C5MB00663E.
+
+- Subramanian A, Tamayo P, Mootha VK, et al. (2005). **Gene set enrichment analysis: a knowledge-based approach for interpreting genome-wide expression profiles.** *PNAS*, 102(43):15545–15550. DOI: 10.1073/pnas.0506580102.
+
+- Korotkevich G, Sukhov V, Budin N, et al. (2021). **Fast gene set enrichment analysis.** *bioRxiv*. DOI: 10.1101/060012.
+
+- Liberzon A, Birger C, Thorvaldsdóttir H, et al. (2015). **The Molecular Signatures Database Hallmark gene set collection.** *Cell Systems*, 1(6):417–425. DOI: 10.1016/j.cels.2015.12.004.
+
+- Ashburner M, Ball CA, Blake JA, et al. (2000). **Gene Ontology: tool for the unification of biology.** *Nature Genetics*, 25:25–29. DOI: 10.1038/75556.
+
+- Kanehisa M, Goto S. (2000). **KEGG: Kyoto Encyclopedia of Genes and Genomes.** *Nucleic Acids Research*, 28(1):27–30. DOI: 10.1093/nar/28.1.27.
+
+- Davis S, Meltzer PS. (2007). **GEOquery: a bridge between the Gene Expression Omnibus (GEO) and BioConductor.** *Bioinformatics*, 23(14):1846–1847. DOI: 10.1093/bioinformatics/btm254.
+
+- Gu Z, Eils R, Schlesner M. (2016). **Complex heatmaps reveal patterns and correlations in multidimensional genomic data.** *Bioinformatics*, 32(18):2847–2849. DOI: 10.1093/bioinformatics/btw313.
+
+------------------------------------------------------------------------
+
+# 🛠 Tools and Resources
+
+**Programming environment**
+
+- R v4.6.0
+- Bioconductor v3.23
+- renv v1.3.1
+- Quarto (analytical report)
+
+**Differential expression**
+
+- DESeq2 v1.52.0
+- apeglm v1.34.0
+- GEOquery v2.80.0
+
+**Functional enrichment**
+
+- clusterProfiler v4.20.3
+- ReactomePA v1.56.0
+- fgsea v1.38.0
+- msigdbr v26.1.1
+- org.Hs.eg.db v3.23.1
+- GO.db v3.23.1
+- reactome.db v1.96.0
+
+**Data resources**
+
+- NCBI Gene Expression Omnibus (GEO), accession GSE166409
+- MSigDB (Hallmark, C3, C7, C8), Gene Ontology, KEGG and Reactome
+
+**Visualization**
+
+- ggplot2 v4.0.4
+- ggrepel v0.9.8
+- ggridges v0.5.7
+- ComplexHeatmap v2.28.0
+- pheatmap v1.0.13
+
+**Data manipulation**
+
+- dplyr v1.2.1 
+- tidyr v1.3.2
+
+------------------------------------------------------------------------
+
+# 📌 Note
+
+This repository is structured as a **reproducible end-to-end bulk RNA-seq bioinformatics workflow** rather than a single analysis script.
+
+The pipeline emphasizes:
+
+- modularity
+- reproducibility
+- count-based statistical modelling
+- explicit quality assessment
+- transparent handling of confounders
+- background-aware functional enrichment
+- complete and auditable result tables
+- transparent statistical methodology
+- biological interpretability
+- suitability for real-world bulk RNA-seq projects
+
+The workflow is designed as a **service-oriented demonstration project**, illustrating how a complete differential expression and functional enrichment analysis can be structured from a raw count matrix to an interpretable analytical report.
+
+------------------------------------------------------------------------
+
+# 📬 Contact
+
+For questions, collaborations, or bioinformatics consulting inquiries:
+
+**Davide Maccarrone**
+
+- GitHub: <https://github.com/DaviMacca08>
+- LinkedIn: <https://www.linkedin.com/in/davidemaccarrone>
+- Email: [davide_maccarrone\@icloud.com](mailto:davide_maccarrone@icloud.com){.email}

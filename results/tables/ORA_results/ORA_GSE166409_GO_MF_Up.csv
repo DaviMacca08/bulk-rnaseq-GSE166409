@@ -1,0 +1,2 @@
+"ID","Description","GeneRatio","BgRatio","RichFactor","FoldEnrichment","oddsRatio","zScore","pvalue","p.adjust","qvalue","geneID","Count","SetSize","DESize","UniverseSize"
+"GO:0004888","transmembrane signaling receptor activity","12/79","488/12369",0.0245901639344262,3.85007262917618,4.44525272795685,5.15023069563767,5.72825826499494e-05,0.0120293423564894,0.00190937843090587,"ADGRG1/ABCA7/IL1RL1/LGR6/IL5RA/NTRK1/TNFRSF4/HRH4/PTGFR/FGFR2/CSF2RB/ADORA2B",12,488,79,12369

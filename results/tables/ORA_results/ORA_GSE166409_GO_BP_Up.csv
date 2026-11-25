@@ -1,0 +1,2 @@
+"ID","Description","GeneRatio","BgRatio","RichFactor","FoldEnrichment","oddsRatio","zScore","pvalue","p.adjust","qvalue","geneID","Count","SetSize","DESize","UniverseSize"
+"GO:0097028","dendritic cell differentiation","4/76","30/12143",0.133333333333333,21.3035087719298,25.7286324786325,8.8360490950363,3.43203720203918e-05,0.0485633264088543,0.000926542519122036,"TMEM176A/TMEM176B/IL4/UBD",4,30,76,12143

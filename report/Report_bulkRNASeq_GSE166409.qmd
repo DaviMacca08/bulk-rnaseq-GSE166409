@@ -1,0 +1,946 @@
+---
+title: "Transcriptomic Profiling in Familial Thrombocytopenia"
+subtitle: "Bulk RNA-seq analysis of GSE166409: differential gene expression and functional enrichment"
+author: "Davide Maccarrone"
+date: today
+date-format: "D MMMM YYYY"
+lang: en
+format:
+  pdf:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    number-depth: 3
+    fig-pos: H
+    fig-width: 7
+    fig-height: 5
+    keep-tex: true
+    colorlinks: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(knitr)
+
+# ---- Project ----
+gse <- "GSE166409"
+
+# ---- Folders (relative to the report/ directory) ----
+dir_qc   <- "../results/plots/QC"
+dir_eda  <- "../results/plots/EDA"
+dir_deg  <- "../results/plots/DEG"
+dir_ora  <- "../results/plots/ORA"
+dir_gsea <- "../results/plots/GSEA"
+
+dir_tbl      <- "../results/tables"
+dir_ora_tbl  <- file.path(dir_tbl, "ORA_results")
+dir_gsea_tbl <- file.path(dir_tbl, "GSEA_results")
+
+# Includes a figure; stops the rendering if the file is missing
+fig <- function(dir, file) {
+  f <- file.path(dir, file)
+  if (!file.exists(f)) stop("Figure not found: ", f, call. = FALSE)
+  knitr::include_graphics(f)
+}
+
+# Reads a table written by the analysis scripts; stops if it is missing
+read_result <- function(dir, file) {
+  f <- file.path(dir, file)
+  if (!file.exists(f)) stop("Table not found: ", f, call. = FALSE)
+  read.csv(f, stringsAsFactors = FALSE)
+}
+
+# Installed version of a package ("not installed" if absent)
+pkg_ver <- function(p) {
+  v <- suppressWarnings(utils::packageDescription(p, fields = "Version"))
+  if (is.na(v)) "not installed" else as.character(v)
+}
+
+# Number formatting: thousands separator and p-values
+fmt_n <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+fmt_p <- function(p) ifelse(p < 0.001, formatC(p, format = "e", digits = 1),
+                            formatC(p, format = "f", digits = 2))
+
+# Top terms of an ORA table (all DEGs by default), ordered by adjusted p-value
+top_ora <- function(db, direction = "All", n = 3) {
+  f <- file.path(dir_ora_tbl, sprintf("ORA_%s_%s_%s.csv", gse, db, direction))
+  if (!file.exists(f)) return("no significant term")
+  x <- read.csv(f, stringsAsFactors = FALSE)
+  x <- x[order(x$p.adjust), ]
+  paste(gsub("_", " ", head(x$Description, n)), collapse = "; ")
+}
+
+# Top significant gene sets of a GSEA collection in one direction (by adjusted p-value)
+top_gsea <- function(collection, direction = c("up", "down"), n = 3) {
+  direction <- match.arg(direction)
+  x <- read_result(dir_gsea_tbl, sprintf("results_%s_GSEA_%s.csv", gse, collection))
+  keep <- !is.na(x$padj) & x$padj < 0.05 & (if (direction == "up") x$NES > 0 else x$NES < 0)
+  x <- x[keep, ]
+  if (nrow(x) == 0) return("none")
+  x <- x[order(x$padj), ]
+  paste(gsub("_", " ", head(x$pathway, n)), collapse = "; ")
+}
+```
+
+```{r data}
+# ---- Differential expression table (script 01) ----
+deg <- read_result(dir_tbl, sprintf("DEGs_%s.csv", gse))
+qc  <- read_result(dir_tbl, sprintf("QC_sample_metrics_%s.csv", gse))
+sig <- deg[deg$significance != "Not significant", ]
+
+n_modelled <- nrow(deg)
+n_tested   <- sum(!is.na(deg$padj))
+n_up       <- sum(deg$significance == "Up in THR")
+n_down     <- sum(deg$significance == "Down in THR")
+n_deg      <- n_up + n_down
+
+# ---- Gene counts along the preprocessing steps ----
+summ_file <- file.path(dir_tbl, sprintf("analysis_summary_%s.csv", gse))
+if (file.exists(summ_file)) {
+  s <- read.csv(summ_file, stringsAsFactors = FALSE)
+  n_raw  <- s$n[s$step == "Genes in raw count matrix"]
+  n_filt <- s$n[s$step == "Genes after expression filter"]
+  n_sex  <- s$n[s$step == "X/Y-linked genes removed"]
+} else {
+  # Values from the log of the analysis run (analysis summary table not generated)
+  n_raw <- 39376L; n_filt <- 17440L; n_sex <- 566L
+}
+stopifnot(n_filt - n_sex == n_modelled)
+
+# ---- Quality control ranges ----
+lib_range      <- range(qc$lib_size)
+lib_ratio      <- max(qc$lib_size) / min(qc$lib_size)
+det_range      <- range(qc$detected_genes)
+cor_mean_range <- range(qc$mean_cor)
+cor_pair_range <- c(0.9613455, 0.9747862)   # pairwise range from the correlation matrix (script 01 log)
+pca_var        <- c(PC1 = 58.8, PC2 = 17.2) # % variance explained (script 01 log)
+
+# ---- Genes of the structural-variant locus (Wahlster et al., 2021, Fig. 1D) ----
+locus_genes <- c("ANKRD26", "WAC", "YME1L1", "MASTL", "ACBD5",
+                 "RAB18", "MKX", "ARMC4", "MPP7", "BAMBI")
+
+rank_padj <- rank(deg$padj, ties.method = "min", na.last = "keep")
+pos <- function(sym) which(deg$SYMBOL == sym)[1]
+stopifnot(!is.na(pos("ANKRD26")), !is.na(pos("WAC")))
+
+ank <- deg[pos("ANKRD26"), ]
+wac <- deg[pos("WAC"), ]
+ank_rank <- rank_padj[pos("ANKRD26")]
+
+other_locus   <- deg[deg$SYMBOL %in% setdiff(locus_genes, c("ANKRD26", "WAC")), ]
+n_locus_other <- nrow(other_locus)
+n_locus_sig   <- sum(other_locus$padj < 0.05, na.rm = TRUE)
+locus_missing <- setdiff(locus_genes, deg$SYMBOL)
+
+locus_text <- if (n_locus_other == 0) {
+  "No other gene of the locus passed the expression filter"
+} else if (n_locus_sig == 0) {
+  sprintf("None of the %d other tested genes of the locus was significant (smallest FDR %s)",
+          n_locus_other, fmt_p(min(other_locus$padj, na.rm = TRUE)))
+} else {
+  sprintf("%d of the %d other tested genes of the locus were significant", n_locus_sig, n_locus_other)
+}
+if (n_locus_other > 0 && length(locus_missing) > 0) {
+  locus_text <- paste0(locus_text, "; ", paste(locus_missing, collapse = ", "),
+                       " did not pass the expression filter")
+}
+
+# Top up- and down-regulated DEGs (adjusted p-value, then effect size)
+ord      <- function(d) d[order(d$padj, -abs(d$log2FC_shrunk)), ]
+top_up   <- head(ord(sig[sig$significance == "Up in THR", ]), 10)
+top_down <- head(ord(sig[sig$significance == "Down in THR", ]), 10)
+top_up_symbol <- top_up$SYMBOL[top_up$SYMBOL != "ANKRD26"][1]
+
+# Median normalised counts of ANKRD26 and WAC per group
+nc <- read_result(dir_tbl, sprintf("normalized_counts_%s.csv", gse))
+nc$ENTREZID <- as.character(nc$ENTREZID)
+grp <- stats::setNames(qc$group, qc$sample)
+gene_group_median <- function(entrez) {
+  v <- unlist(nc[nc$ENTREZID == as.character(entrez), names(grp)])
+  tapply(v, grp[names(v)], median)
+}
+ank_med <- gene_group_median(ank$ENTREZID)
+wac_med <- gene_group_median(wac$ENTREZID)
+
+# Canonical platelet / megakaryocyte genes among the DEGs
+plt_genes  <- c("PF4", "PPBP", "ITGA2B", "GP9", "GP1BA", "GP6",
+                "TUBB1", "MPIG6B", "GNG11", "TREML1", "CAVIN2")
+plt_deg    <- sig[sig$SYMBOL %in% plt_genes, ]
+n_plt_down <- sum(plt_deg$significance == "Down in THR")
+
+# Replication-dependent histone genes among the DEGs
+hist_pat   <- "^(H1-[0-9]+|H2AC[0-9]+|H2BC[0-9]+|H3C[0-9]+|H4C[0-9]+)$"
+hist_deg   <- sig[grepl(hist_pat, sig$SYMBOL), ]
+n_hist     <- nrow(hist_deg)
+n_hist_dn  <- sum(hist_deg$significance == "Down in THR")
+
+# ---- Enrichment summaries ----
+ora_dbs <- c(GO_BP = "GO Biological Process", GO_MF = "GO Molecular Function",
+             GO_CC = "GO Cellular Component", KEGG = "KEGG", Reactome = "Reactome",
+             Hallmark = "MSigDB Hallmark")
+
+ora_count <- function(db, direction) {
+  f <- file.path(dir_ora_tbl, sprintf("ORA_%s_%s_%s.csv", gse, db, direction))
+  if (file.exists(f)) nrow(read.csv(f)) else 0L
+}
+ora_tbl <- data.frame(
+  Database = unname(ora_dbs),
+  `All enriched terms` = vapply(names(ora_dbs), ora_count, integer(1), direction = "All"),
+  `Up in THR` = vapply(names(ora_dbs), ora_count, integer(1), direction = "Up"),
+  `Down in THR` = vapply(names(ora_dbs), ora_count, integer(1), direction = "Down"),
+  check.names = FALSE)
+
+gsea_cols <- c(Hallmark = "MSigDB Hallmark", GO_BP_full = "GO Biological Process",
+               GO_MF_full = "GO Molecular Function", GO_CC_full = "GO Cellular Component",
+               KEGG = "KEGG", Reactome = "Reactome", C3_TFT_GTRD = "MSigDB C3 (TF targets, GTRD)",
+               C7_Immune = "MSigDB C7 (immunologic)", C8_CellType = "MSigDB C8 (cell type)")
+
+gsea_count <- function(collection) {
+  x <- read_result(dir_gsea_tbl, sprintf("results_%s_GSEA_%s.csv", gse, collection))
+  s <- !is.na(x$padj) & x$padj < 0.05
+  data.frame(tested = nrow(x), significant = sum(s),
+             up = sum(s & x$NES > 0), down = sum(s & x$NES < 0))
+}
+gsea_tbl <- cbind(Collection = unname(gsea_cols),
+                  do.call(rbind, lapply(names(gsea_cols), gsea_count)))
+colnames(gsea_tbl) <- c("Collection", "Sets tested", "Significant", "Up in THR", "Down in THR")
+
+# ---- MAPK-related Reactome sets (ERK activation was shown in HSPCs by the original study) ----
+reactome_gsea <- read_result(dir_gsea_tbl, sprintf("results_%s_GSEA_Reactome.csv", gse))
+mapk      <- reactome_gsea[reactome_gsea$pathway %in% c("RAF activation", "MAPK1/MAPK3 signaling"), ]
+mapk_sig  <- any(mapk$padj < 0.05, na.rm = TRUE)
+mapk_text <- paste(sprintf("%s: NES %.2f, FDR %s", mapk$pathway, mapk$NES, fmt_p(mapk$padj)),
+                   collapse = "; ")
+mapk_summary <- if (nrow(mapk) == 0) {
+  "MAPK-related Reactome sets were not among the tested sets"
+} else if (mapk_sig) {
+  sprintf("MAPK-related Reactome sets were significant (%s)", mapk_text)
+} else {
+  sprintf("MAPK-related Reactome sets showed %s but non-significant trends (%s)",
+          if (all(mapk$NES > 0)) "positive" else "mixed", mapk_text)
+}
+
+# ---- GO Biological Process terms discussed in the original study ----
+go_full <- read_result(dir_gsea_tbl, sprintf("results_%s_GSEA_GO_BP_full.csv", gse))
+go_term <- function(term) {
+  r <- go_full[go_full$pathway == term, ]
+  if (nrow(r) == 0) return(c(nes = NA_real_, padj = NA_real_))
+  c(nes = r$NES[1], padj = r$padj[1])
+}
+go_concordance <- function(term, expected_sign) {
+  r <- go_term(term)
+  if (is.na(r["nes"])) return("Not tested")
+  if (sign(r["nes"]) != expected_sign) return("Discordant")
+  if (r["padj"] < 0.05) "Concordant" else "Same direction, not significant"
+}
+go_result <- function(term) {
+  r <- go_term(term)
+  if (is.na(r["nes"])) return("Not tested")
+  sprintf("NES %.2f; FDR %s", r["nes"], fmt_p(r["padj"]))
+}
+```
+
+# Executive Summary
+
+This report presents an independent bulk RNA-seq re-analysis of the public dataset GSE166409 (Wahlster et al., 2021). The dataset contains peripheral blood mononuclear cells (PBMCs) from three members of a family with thrombocytopenia caused by a WAC-ANKRD26 gene fusion (THR) and from three unrelated healthy controls (HC). The analysis covered quality control, differential expression with DESeq2, over-representation analysis (ORA), gene set enrichment analysis (GSEA) and a comparison with the original publication.
+
+**Main results**
+
+- **Data quality.** All six samples were retained. Library sizes ranged from `r round(lib_range[1] / 1e6, 1)` to `r round(lib_range[2] / 1e6, 1)` million counts and `r fmt_n(det_range[1])` to `r fmt_n(det_range[2])` genes were detected per sample.
+- **Differential expression.** `r fmt_n(n_modelled)` genes were modelled (THR vs HC). `r n_deg` genes were differentially expressed (FDR \< 0.05, absolute shrunken log2 fold change \> 1): `r n_up` up-regulated and `r n_down` down-regulated in THR.
+- **Primary finding replicated.** *ANKRD26* was the most significant gene (log2 fold change `r sprintf("%.2f", ank$log2FC_shrunk)`, about `r sprintf("%.1f", 2^ank$log2FC_raw)`-fold; FDR `r fmt_p(ank$padj)`). *WAC* and the other genes of the locus were not changed. Both observations agree with Wahlster et al. (2021).
+- **Dominant functional signal.** ORA and GSEA converge on reduced expression of platelet- and megakaryocyte-related gene sets (hemostasis, coagulation, platelet activation and degranulation, platelet alpha granules). This is compatible with a lower platelet content in PBMC preparations from thrombocytopenic individuals, which the original authors also proposed to explain the changes beyond *ANKRD26*.
+- **Secondary signals.** Chromatin and histone-related terms were also reduced. Up-regulated signals were weaker (TNF and death-receptor signalling, canonical NF-kB signalling, NK- and T-cell signatures). The myeloid signatures reported in the original study showed the same direction but were not significant.
+- **Interpretation.** The results are exploratory: three samples per group, related patients, controls of unreported sex and age, and a strong cell-composition component. Genes on the X and Y chromosomes were excluded because sex is fully confounded with condition.
+
+# Project Overview and Data Description
+
+The dataset analyzed in this project was retrieved from the Gene Expression Omnibus (GEO), a public repository of functional genomics data (Barrett et al., 2013), under accession **GSE166409**. The analysis used the publicly available gene-level raw count matrix. Sample metadata were retrieved programmatically with the R/Bioconductor package `GEOquery` (Davis and Meltzer, 2007).
+
+## Study background and biological objective
+
+Familial thrombocytopenia is a heterogeneous group of inherited disorders characterized by reduced platelet counts and, in some cases, altered platelet function. Inherited thrombocytopenia 2 (THC2) is typically caused by variants in the *ANKRD26* promoter that prevent the silencing of *ANKRD26* during megakaryocytic differentiation.
+
+The dataset comes from a three-generation family with a THC2-like phenotype in which no causal variant was found by short-read sequencing. Long-read sequencing identified a complex structural variant (paired-duplication inversion) that places the promoter and first exon of *WAC* next to exons 10-34 of *ANKRD26*, producing a WAC-ANKRD26 fusion transcript with gain-of-function activity (Wahlster et al., 2021). In the original RNA-seq experiment, *ANKRD26* expression was about 50-fold higher in affected individuals, specifically in the exons retained in the fusion, while other genes of the locus did not change. The authors attributed additional expression changes to the altered blood composition of thrombocytopenic individuals: reduced platelet-associated signatures and increased myeloid-associated signatures.
+
+The present analysis uses the PBMC transcriptomes of affected individuals and healthy controls with three objectives:
+
+1.  to identify differentially expressed genes (DEGs) between affected individuals and healthy controls;
+2.  to characterize the biological processes and pathways associated with these differences by ORA and GSEA;
+3.  to compare the results with the findings of the original publication.
+
+## Dataset and data provenance
+
+The dataset was obtained from GEO (accession **GSE166409**) and originates from the study by Wahlster et al. (2021). In the original study, RNA from PBMCs was processed with a modified SMART-seq2 protocol and sequenced on an Illumina NextSeq 500. The gene-level raw count matrix analyzed here was downloaded from the GEO repository (supplementary file `GSE166409_raw_counts_GRCh38.p13_NCBI.tsv.gz`). Sample-level metadata were retrieved with `GEOquery`.
+
+The original study is:
+
+Wahlster L, Verboon JM, Ludwig LS, et al. (2021). *Familial thrombocytopenia due to a complex structural variant resulting in a WAC-ANKRD26 fusion transcript*. Journal of Experimental Medicine 218(6):e20210444.
+
+## Sample information and experimental design
+
+The dataset comprises six PBMC samples: three affected individuals (THR) and three healthy controls (HC), as shown in @tbl-samples.
+
+| Sample ID | Condition | Sex | Individual |
+|:----------|:----------|:----|:-----------|
+| GSM5070737 | HC | Not reported (inferred male, see below) | Unrelated healthy control |
+| GSM5070738 | HC | Not reported (inferred male, see below) | Unrelated healthy control |
+| GSM5070739 | HC | Not reported (inferred male, see below) | Unrelated healthy control |
+| GSM5070740 | THR | Female | Pedigree ID: I-2 |
+| GSM5070741 | THR | Female | Pedigree ID: II-2 |
+| GSM5070742 | THR | Female | Pedigree ID: II-3 |
+
+: Sample identifiers, experimental conditions and available sample information. Sex and relatedness of the affected individuals are from Wahlster et al. (2021). {#tbl-samples}
+
+According to the original publication, the three affected individuals are females from the same family: one mother (aged 75 years) and her two daughters (aged 45 and 43 years). The healthy controls are described as unrelated; their sex and age are not reported in the publication or in the GEO metadata.
+
+The sex of the controls could be inferred from the data. In a preliminary run, before the exclusion of sex-chromosome genes, Y-linked genes (e.g. *DDX3Y*, *UTY*, *USP9Y*, *ZFY*) were among the most strongly down-regulated genes in THR, whereas *XIST* and *TSIX* were among the most strongly up-regulated. This pattern is consistent with female patients and male controls. Sex is therefore completely confounded with condition and cannot be included in the model; the handling of this confounder is described in @sec-filtering.
+
+Differential expression was tested with DESeq2 using the design `~ condition`. The comparison of interest is **THR vs HC**, with healthy controls as the reference group: positive log2 fold changes indicate higher expression in affected individuals.
+
+## Input data and reference annotation
+
+The analysis used a gene-level matrix of unnormalized integer read counts for the six samples.
+
+Reference information used in this analysis:
+
+- **Organism:** Homo sapiens
+- **Reference genome:** GRCh38.p13
+- **Gene annotation:** NCBI (Entrez Gene identifiers)
+- **Input data:** gene-level raw count matrix generated by NCBI
+- **Number of samples:** 6
+
+# Materials and Methods
+
+## Computational environment and software
+
+All analyses were performed in R (`r R.version.string`) within the RStudio integrated development environment, using Bioconductor (version `r tryCatch(as.character(BiocManager::version()), error = function(e) "3.23")`) for bioinformatics package management and analysis. An R project organized the workflow. Package dependencies were managed with `renv` (version `r pkg_ver("renv")`) and recorded in the `renv.lock` file, which allows the software environment to be restored. The random seed was fixed (1234) for all analyses that use random numbers. The main packages are listed in @tbl-packages.
+
+```{r}
+#| label: tbl-packages
+#| tbl-cap: "Main software packages and versions used in the analysis."
+pkg_info <- data.frame(
+  Package = c("DESeq2", "apeglm", "GEOquery", "AnnotationDbi", "org.Hs.eg.db",
+              "clusterProfiler", "ReactomePA", "fgsea", "msigdbr", "GO.db", "reactome.db",
+              "ComplexHeatmap", "pheatmap", "ggplot2", "ggridges", "dplyr", "tidyr"),
+  Application = c("Differential expression, normalization, VST",
+                  "Log2 fold change shrinkage",
+                  "Retrieval of GEO metadata",
+                  "Annotation interface",
+                  "Human gene annotation and chromosome mapping",
+                  "ORA and GSEA (GO, KEGG), redundancy reduction",
+                  "Reactome ORA and GSEA",
+                  "GSEA of MSigDB collections",
+                  "MSigDB gene sets",
+                  "Gene Ontology annotation",
+                  "Reactome annotation",
+                  "Heatmaps (DEGs)",
+                  "Heatmaps (sample correlation)",
+                  "Data visualization",
+                  "Ridge plots",
+                  "Data manipulation",
+                  "Data reshaping"))
+pkg_info$Version <- vapply(pkg_info$Package, pkg_ver, character(1))
+kable(pkg_info[, c("Package", "Version", "Application")], align = "llc")
+```
+
+Gene sets and annotations come from the following resources:
+
+- **MSigDB:** release 26.1.1.
+- **KEGG:** queried online on 21-11-2026.
+- **Gene Ontology and Reactome:** annotation packages `GO.db` and `reactome.db` (versions in @tbl-packages).
+
+## Count matrix preparation and validation
+
+The gene-level raw count matrix was imported into R with `read.delim()`. The raw counts were used as input for the differential expression analysis; TPM or FPKM values were not used for statistical modelling, because DESeq2 requires unnormalized counts to estimate gene-wise dispersions and fit the negative binomial model.
+
+The matrix contained `r fmt_n(n_raw)` genes (Entrez Gene identifiers stored as row names) and six sample columns (GSM5070737-GSM5070742), which were matched to the metadata by sample name. Data integrity was verified before analysis: matrix dimensions, missing values, negative values, integer values and duplicated gene identifiers. No missing values, negative counts or duplicated identifiers were found, and all entries were non-negative integers.
+
+## Gene filtering and annotation {#sec-filtering}
+
+Gene filtering was performed before fitting the model to remove lowly expressed genes and genes located on the sex chromosomes.
+
+**Low-expression filtering.** Genes were retained if they had at least 10 reads in at least three samples (the size of the smallest group). This step reduced the gene set from `r fmt_n(n_raw)` to `r fmt_n(n_filt)` genes.
+
+**Sex chromosome filtering.** Sex is completely confounded with condition in this dataset (female patients, male controls), so it cannot be modelled as a covariate. Genes located on chromosomes X and Y were therefore excluded before model fitting; chromosomes were assigned by mapping Entrez Gene identifiers with `org.Hs.eg.db` and `AnnotationDbi`. A total of `r fmt_n(n_sex)` genes were removed, leaving `r fmt_n(n_modelled)` genes for differential expression. This is a design-based decision: without it, sex-linked genes dominate the list of DEGs and distort PCA and pathway analyses. The exclusion also removes genuine X-linked signals, and autosomal genes that differ between sexes cannot be removed, so a residual sex effect remains possible.
+
+**Gene annotation.** Entrez Gene identifiers were mapped to official gene symbols and gene names with `AnnotationDbi::mapIds()` and `org.Hs.eg.db`. When several mappings were available, the first was retained (`multiVals = "first"`).
+
+## Normalization and variance-stabilizing transformation
+
+Raw counts were normalized within DESeq2, which estimates sample-specific size factors (median-of-ratios) to correct for sequencing depth and library composition. These size factors are used internally by DESeq2 for modelling. Differential expression testing used the raw counts only.
+
+For visualization and sample-level assessment, a variance-stabilizing transformation (VST) was applied. It reduces the dependence of the variance on the mean expression level. Two VST matrices were generated:
+
+- **Quality control and exploratory analysis:** `blind = TRUE`, which ignores the experimental design, so that sample separation is not induced by the transformation.
+- **DEG heatmap:** `blind = FALSE`, which uses the experimental design.
+
+The matrices were extracted with `SummarizedExperiment::assay()`.
+
+## Quality control and exploratory data analysis
+
+Quality control (QC) and exploratory data analysis (EDA) assessed sample quality, expression distributions and the global variability of the data before differential expression analysis.
+
+**Quality control.** Four sample-level metrics were calculated, as summarized in @tbl-qc-metrics: library size and number of detected genes from the raw counts, and median VST expression and mean pairwise correlation from the VST matrix.
+
+| Metric | Description |
+|:-----------------------------------|:-----------------------------------|
+| Library size | Total gene-assigned raw counts per sample |
+| Detected genes | Number of genes with non-zero counts |
+| Median VST expression | Median variance-stabilized expression per sample |
+| Mean Pearson correlation | Mean pairwise correlation with the remaining samples |
+
+: Sample-level quality control metrics. {#tbl-qc-metrics}
+
+Library sizes are shown in @fig-qc-library. Expression distributions were examined with boxplots (@fig-qc-boxplot) and density plots (@fig-qc-density) of the VST values (`blind = TRUE`).
+
+```{r}
+#| label: fig-qc-library
+#| fig-cap: "Total gene-assigned raw counts per sample. Library size is the total number of gene-level counts available for normalization and differential expression analysis."
+#| out-width: "100%"
+fig(dir_qc, "library_size.png")
+```
+
+```{r}
+#| label: fig-qc-boxplot
+#| fig-cap: "Boxplots of variance-stabilized expression values per sample. The plot shows the median and interquartile range of the transformed values."
+#| out-width: "100%"
+fig(dir_qc, "boxplot_vst_distributions.png")
+```
+
+```{r}
+#| label: fig-qc-density
+#| fig-cap: "Density distributions of variance-stabilized expression values per sample. Overlapping curves indicate comparable global expression distributions."
+#| out-width: "100%"
+fig(dir_qc, "density_vst_expression.png")
+```
+
+Pairwise Pearson correlations between samples were computed on the VST matrix (`blind = TRUE`) and displayed as a hierarchical clustering heatmap (@fig-qc-cor). For each sample, the mean correlation with the other samples was also calculated.
+
+```{r}
+#| label: fig-qc-cor
+#| fig-cap: "Pairwise Pearson correlation between samples, calculated on variance-stabilized expression values, with hierarchical clustering. Colour indicates the correlation coefficient."
+#| out-width: "100%"
+fig(dir_eda, "sample_correlation_heatmap.png")
+```
+
+**Outlier assessment.** The pipeline can flag samples with an absolute robust z-score above 3.5 (median and MAD) for log10 library size, number of detected genes or mean correlation. This screening is applied only when at least eight samples are available; it was therefore not applied to this dataset of six samples. Outlier assessment was based on the QC metrics, the correlation patterns and the PCA, and no sample was excluded.
+
+**Exploratory data analysis.** Principal component analysis (PCA) was performed on the VST matrix (`blind = TRUE`) using the 500 genes with the highest variance. The gene selection depends only on expression variability, not on differential expression. PCA scores (@fig-pca) and the variance explained by each component (@fig-scree) were used to examine the relationships between samples and the association of the main sources of variability with the experimental condition.
+
+```{r}
+#| label: fig-pca
+#| fig-cap: "PCA of variance-stabilized expression values using the 500 most variable genes. Each point is a sample, coloured by condition; percentages indicate the variance explained by PC1 and PC2."
+#| out-width: "100%"
+fig(dir_eda, "pca_plot.png")
+```
+
+```{r}
+#| label: fig-scree
+#| fig-cap: "Percentage of variance explained by each principal component (bars) and cumulative variance (line), from the PCA of the 500 most variable genes."
+#| out-width: "100%"
+fig(dir_eda, "pca_scree_plot.png")
+```
+
+## Differential gene expression analysis
+
+Differential expression was analyzed with DESeq2 (Love et al., 2014), which models counts with a negative binomial generalized linear model. The filtered raw count matrix was used with the design formula `~ condition`; healthy controls were the reference group and the contrast of interest was THR vs HC.
+
+Size factors, gene-wise dispersions and the dispersion trend were estimated with the DESeq2 framework, and the dispersions were moderated towards the fitted trend. Genes were tested with the Wald test. DESeq2 independent filtering (target level 0.05) was used, so genes with too little information have a missing adjusted p-value. P-values were adjusted with the Benjamini-Hochberg procedure to control the false discovery rate (FDR).
+
+Log2 fold changes were shrunk with the `apeglm` method (Zhu et al., 2019) to stabilize effect-size estimates, particularly for genes with low expression or high variability. Shrinkage does not change p-values. Genes were classified as differentially expressed when the adjusted p-value was below 0.05 **and** the absolute shrunken log2 fold change was above 1. The output table contains gene identifiers and symbols, mean normalized expression, raw and shrunken log2 fold changes, standard errors, Wald statistics, p-values and adjusted p-values.
+
+Model diagnostics (dispersion estimates and the distribution of raw p-values) are shown in the Supplementary Material.
+
+## Over-Representation Analysis (ORA)
+
+ORA identified biological processes, molecular functions, cellular components and pathways over-represented among the DEGs. Three gene lists were analyzed separately: all DEGs, up-regulated DEGs and down-regulated DEGs in THR vs HC. Entrez Gene identifiers were used throughout.
+
+The following databases were tested with `clusterProfiler` (Wu et al., 2021) and `ReactomePA` (Yu and He, 2016): Gene Ontology (Biological Process, Molecular Function and Cellular Component, each tested separately), KEGG, Reactome and MSigDB Hallmark gene sets (Liberzon et al., 2015). Over-representation was tested with a one-sided hypergeometric test. The background universe consisted of the `r fmt_n(n_tested)` genes with an adjusted p-value in the differential expression analysis, not of the entire genome. Gene sets with 10 to 500 genes were evaluated; p-values were adjusted with the Benjamini-Hochberg method and terms with FDR \< 0.05 were reported. Redundant GO terms were merged with `simplify()` (semantic similarity cutoff 0.7), keeping the term with the lowest adjusted p-value.
+
+## Gene Set Enrichment Analysis (GSEA)
+
+GSEA identified gene sets with coordinated expression changes without applying a threshold to select DEGs (Subramanian et al., 2005). All genes with a Wald statistic (`r fmt_n(n_modelled)` genes) were ranked by this statistic from the unshrunken results; in the THR vs HC contrast, positive values indicate higher expression in THR.
+
+The following collections were tested: MSigDB Hallmark, MSigDB C3 (transcription-factor targets, GTRD), C7 (immunologic signatures) and C8 (cell-type signatures); Gene Ontology (Biological Process, Molecular Function, Cellular Component); KEGG; and Reactome. KEGG, GO and Reactome were analyzed with `clusterProfiler` and `ReactomePA`, and the MSigDB collections with `fgsea` (Korotkevich et al., 2021) (multilevel algorithm, exact p-values). Gene sets with 15 to 500 genes were tested, with Benjamini-Hochberg adjustment. For each gene set the normalized enrichment score (NES), nominal p-value, adjusted p-value and leading-edge genes were obtained. Positive NES indicates enrichment at the THR end of the ranking, negative NES at the HC end. Significant GO terms were simplified (cutoff 0.7) separately for up- and down-regulated terms; complete tables are provided in the deliverables.
+
+## Statistical criteria and visualization
+
+Statistical significance was defined as FDR \< 0.05 for the differential expression analysis and for all enrichment analyses. The criteria used to classify genes as differentially expressed were:
+
+- Adjusted p-value (Benjamini-Hochberg): \< 0.05
+- Absolute shrunken log2 fold change: \> 1
+
+Differential expression was displayed with a volcano plot and a heatmap of the top DEGs (ranked by adjusted p-value) built from VST values (`blind = FALSE`) and standardized by gene. ORA results are shown as dot plots of the ten most significant terms (gene ratio on the x-axis, fold enrichment as point size, FDR as colour). GSEA results are shown as lollipop plots of the ten most significant up-regulated and down-regulated sets (FDR \< 0.05, at least five leading-edge genes; point size is the leading-edge size), as enrichment plots, and as a ridge plot of the log2 fold changes of leading-edge genes. All results should be read in the context of the small sample size and the exploratory nature of the dataset.
+
+# Results
+
+## Data quality and sample assessment
+
+Library sizes ranged from `r fmt_n(lib_range[1])` to `r fmt_n(lib_range[2])` gene-assigned counts (ratio between the largest and smallest library: `r sprintf("%.2f", lib_ratio)`), and `r fmt_n(det_range[1])` to `r fmt_n(det_range[2])` genes were detected per sample (@tbl-qc-samples, @fig-qc-library). VST distributions were comparable across samples (@fig-qc-boxplot, @fig-qc-density), with minor differences in the low-expression tail that did not separate the groups.
+
+```{r}
+#| label: tbl-qc-samples
+#| tbl-cap: "Sample-level quality control results."
+qc_tbl <- data.frame(
+  Sample = qc$sample,
+  Group = qc$group,
+  `Library size (millions)` = round(qc$lib_size / 1e6, 2),
+  `Detected genes` = fmt_n(qc$detected_genes),
+  `Median VST` = round(qc$median_vst, 2),
+  `Mean correlation` = round(qc$mean_cor, 3),
+  check.names = FALSE)
+kable(qc_tbl, align = "llrrrr")
+```
+
+Pairwise Pearson correlations ranged from `r sprintf("%.3f", cor_pair_range[1])` to `r sprintf("%.3f", cor_pair_range[2])` (mean correlation per sample: `r sprintf("%.3f", cor_mean_range[1])` to `r sprintf("%.3f", cor_mean_range[2])`). The highest correlation was between the THR samples GSM5070740 and GSM5070741; the lowest involved these two samples and the controls GSM5070739 and GSM5070737 (@fig-qc-cor). Hierarchical clustering grouped GSM5070740 and GSM5070741 together, whereas GSM5070742 clustered with the controls, next to GSM5070738.
+
+No sample showed an abnormal library size, gene detection or correlation, and all six samples were retained.
+
+## Exploratory data analysis
+
+The first two principal components explained `r pca_var["PC1"]`% and `r pca_var["PC2"]`% of the variance (cumulative `r sum(pca_var)`%); five components were present in total, and the first three explained about 90% of the variance (@fig-pca, @fig-scree).
+
+PC1 separated the THR samples GSM5070740 and GSM5070741 (positive scores, approximately +17 and +26) from the three controls (negative scores, approximately -22 to -4). GSM5070742 (THR) had an intermediate position on PC1 (approximately +2), closer to the control GSM5070738 than to the other two affected samples. PC2 was driven mainly by GSM5070738 (HC) and GSM5070742 (THR) at opposite ends. The global separation between groups is therefore clear along PC1 but not complete for GSM5070742, which indicates heterogeneity within the affected group. It agrees with the clustering of GSM5070742 with the controls in the correlation heatmap (@fig-qc-cor). The complete separation of the groups seen in the DEG heatmap (@fig-heatmap) is expected, because the genes were selected for their difference between groups.
+
+## Differential expression results
+
+A total of `r fmt_n(n_modelled)` genes were included in the model, `r fmt_n(n_tested)` of them with an adjusted p-value. Using the pre-defined criteria, `r n_deg` genes were differentially expressed in THR vs HC: `r n_up` up-regulated and `r n_down` down-regulated (`r round(100 * n_down / n_deg)`% of the DEGs) (@tbl-de-summary).
+
+```{r}
+#| label: tbl-de-summary
+#| tbl-cap: "Summary of the gene filtering and differential expression analysis."
+de_tbl <- data.frame(
+  Metric = c("Genes in the raw count matrix",
+             "Genes after expression filtering",
+             "X/Y-linked genes removed",
+             "Genes modelled with DESeq2",
+             "Genes with an adjusted p-value",
+             "Significant DEGs (FDR < 0.05, absolute shrunken log2FC > 1)",
+             "Up-regulated in THR",
+             "Down-regulated in THR"),
+  Result = fmt_n(c(n_raw, n_filt, n_sex, n_modelled, n_tested, n_deg, n_up, n_down)))
+kable(de_tbl, align = "lr")
+```
+
+*ANKRD26* was the gene with the lowest adjusted p-value (rank `r ank_rank`; log2 fold change `r sprintf("%.2f", ank$log2FC_shrunk)`, about `r sprintf("%.1f", 2^ank$log2FC_raw)`-fold on the raw scale; FDR `r fmt_p(ank$padj)`). Median normalized counts were `r round(ank_med["HC"])` in controls and `r round(ank_med["THR"])` in affected individuals, and every affected sample was higher than every control (@fig-ankrd26-wac). *WAC*, whose promoter drives the fusion, was not changed (log2 fold change `r sprintf("%.2f", wac$log2FC_shrunk)`, FDR `r fmt_p(wac$padj)`; median normalized counts `r round(wac_med["HC"])` in controls and `r round(wac_med["THR"])` in affected individuals). `r locus_text` (@tbl-locus).
+
+```{r}
+#| label: fig-ankrd26-wac
+#| fig-cap: "Normalized counts of ANKRD26 and WAC in each sample (log10 scale, free y-axis). Boxes show the median and interquartile range per group."
+#| out-width: "100%"
+fig(dir_deg, "check_ANKRD26_WAC.png")
+```
+
+```{r}
+#| label: tbl-locus
+#| tbl-cap: "Genes of the structural-variant locus: expression, shrunken log2 fold change (THR vs HC) and adjusted p-value. Rank refers to the ordering of all modelled genes by adjusted p-value."
+loc <- deg[deg$SYMBOL %in% locus_genes, ]
+loc <- loc[order(loc$padj), ]
+loc_tbl <- data.frame(
+  Gene = loc$SYMBOL,
+  `Mean normalized counts` = fmt_n(round(loc$baseMean)),
+  `log2FC (shrunken)` = round(loc$log2FC_shrunk, 2),
+  FDR = fmt_p(loc$padj),
+  Rank = fmt_n(rank_padj[match(loc$SYMBOL, deg$SYMBOL)]),
+  check.names = FALSE)
+kable(loc_tbl, align = "lrrrr")
+```
+
+The most significant DEGs are listed in @tbl-top-genes and displayed in the volcano plot (@fig-volcano). `r n_plt_down` of the `r length(plt_genes)` canonical platelet and megakaryocyte genes examined (`r paste(plt_genes, collapse = ", ")`) were among the down-regulated DEGs. Besides *ANKRD26*, the strongest up-regulated gene was *`r top_up_symbol`*.
+
+```{r}
+#| label: tbl-top-genes
+#| tbl-cap: "Ten most significant up-regulated and down-regulated genes in THR vs HC (ordered by adjusted p-value)."
+tg <- rbind(top_up, top_down)
+tg_tbl <- data.frame(
+  Direction = rep(c("Up", "Down"), times = c(nrow(top_up), nrow(top_down))),
+  Gene = tg$SYMBOL,
+  Description = ifelse(is.na(tg$GENENAME), "", substr(tg$GENENAME, 1, 48)),
+  `log2FC (shrunken)` = round(tg$log2FC_shrunk, 2),
+  FDR = fmt_p(tg$padj),
+  check.names = FALSE)
+kable(tg_tbl, align = "llllr")
+```
+
+```{r}
+#| label: fig-volcano
+#| fig-cap: "Volcano plot of THR vs HC. Each point is a gene: x-axis, shrunken log2 fold change; y-axis, negative log10 adjusted p-value. Dashed lines mark the thresholds (absolute log2 fold change of 1, FDR of 0.05); the 15 most significant DEGs are labelled."
+#| out-width: "100%"
+fig(dir_deg, "volcano_plot.png")
+```
+
+The heatmap of the top DEGs (@fig-heatmap) separates the three affected samples from the three controls. `r if (n_hist > 0) sprintf("The DEGs include %d replication-dependent histone genes (e.g. %s), %d of them down-regulated in THR.", n_hist, paste(head(hist_deg$SYMBOL, 3), collapse = ", "), n_hist_dn) else ""`
+
+```{r}
+#| label: fig-heatmap
+#| fig-cap: "Heatmap of the top DEGs ranked by adjusted p-value, using variance-stabilized expression values standardized by gene (row Z-score). Columns are samples, annotated by condition."
+#| out-width: "80%"
+fig(dir_deg, "Heatmap_TopDEGs.png")
+```
+
+## Functional enrichment: ORA {#sec-ora}
+
+ORA was run separately on all DEGs, on up-regulated and on down-regulated genes, against six databases. @tbl-ora-summary reports the number of significant terms (FDR \< 0.05) for each combination; the figures below show the results for all DEGs, and the results by direction are provided in the deliverables (`results/tables/ORA_results` and `results/plots/ORA`).
+
+```{r}
+#| label: tbl-ora-summary
+#| tbl-cap: "Number of significant terms (FDR < 0.05) in ORA, by database and gene list. GO terms are shown after redundancy reduction."
+kable(ora_tbl, align = "lrrr")
+```
+
+The most significant terms for all DEGs were:
+
+- **GO Biological Process** (@fig-ora-gobp): `r top_ora("GO_BP", n = 5)`.
+- **GO Molecular Function** (@fig-ora-gomf): `r top_ora("GO_MF", n = 4)`.
+- **GO Cellular Component** (@fig-ora-gocc): `r top_ora("GO_CC", n = 4)`.
+- **KEGG** (@fig-ora-kegg): `r top_ora("KEGG", n = 4)`.
+- **Reactome** (@fig-ora-reactome): `r top_ora("Reactome", n = 5)`.
+- **MSigDB Hallmark** (@fig-ora-hallmark): `r top_ora("Hallmark", n = 5)`.
+
+Across all databases, the strongest over-representation concerns blood coagulation, hemostasis, wound healing and platelet biology (platelet alpha granules; platelet activation, degranulation and aggregation; RUNX1 regulation of megakaryocyte differentiation and platelet function), together with extracellular matrix and integrin terms. Terms related to chromatin (structural constituent of chromatin, nucleosome, protein-DNA complex) are also significant. The KEGG terms *Systemic lupus erythematosus* and *Alcoholism*, when present, are probably driven by the same cluster of histone genes (and by complement genes), and should not be read as evidence of these conditions; the genes behind each term are listed in the `geneID` column of the ORA tables.
+
+```{r}
+#| label: fig-ora-gobp
+#| fig-cap: "ORA, GO Biological Process, all DEGs: the ten most significant terms. X-axis, gene ratio; point size, fold enrichment; colour, FDR."
+#| out-width: "100%"
+fig(dir_ora, "ORA_GO_BP_All.png")
+```
+
+```{r}
+#| label: fig-ora-gomf
+#| fig-cap: "ORA, GO Molecular Function, all DEGs: the ten most significant terms."
+#| out-width: "100%"
+fig(dir_ora, "ORA_GO_MF_All.png")
+```
+
+```{r}
+#| label: fig-ora-gocc
+#| fig-cap: "ORA, GO Cellular Component, all DEGs: significant terms."
+#| out-width: "100%"
+fig(dir_ora, "ORA_GO_CC_All.png")
+```
+
+```{r}
+#| label: fig-ora-kegg
+#| fig-cap: "ORA, KEGG pathways, all DEGs: significant pathways."
+#| out-width: "100%"
+fig(dir_ora, "ORA_KEGG_All.png")
+```
+
+```{r}
+#| label: fig-ora-reactome
+#| fig-cap: "ORA, Reactome pathways, all DEGs: the ten most significant pathways."
+#| out-width: "100%"
+fig(dir_ora, "ORA_Reactome_All.png")
+```
+
+```{r}
+#| label: fig-ora-hallmark
+#| fig-cap: "ORA, MSigDB Hallmark gene sets, all DEGs: significant gene sets."
+#| out-width: "100%"
+fig(dir_ora, "ORA_Hallmark_All.png")
+```
+
+## Functional enrichment: GSEA {#sec-gsea}
+
+GSEA was run on the ranked list of `r fmt_n(n_modelled)` genes against nine collections. Overall, `r sum(gsea_tbl[["Significant"]])` of the `r fmt_n(sum(gsea_tbl[["Sets tested"]]))` gene sets tested were significant (FDR \< 0.05; @tbl-gsea-summary). For the GO collections the counts refer to the complete tables, before redundancy reduction. Positive NES indicates enrichment at the THR end of the ranking, negative NES at the HC end.
+
+```{r}
+#| label: tbl-gsea-summary
+#| tbl-cap: "Number of gene sets tested and significant (FDR < 0.05) in GSEA, by collection and direction."
+kable(gsea_tbl, align = "lrrrr")
+```
+
+**Down in THR.** All collections show the same dominant signal.
+
+- **Hallmark** (@fig-gsea-hallmark): `r gsea_tbl[["Significant"]][1]` significant sets (`r gsea_tbl[["Down in THR"]][1]` with negative and `r gsea_tbl[["Up in THR"]][1]` with positive NES); the most significant down-regulated sets are `r top_gsea("Hallmark", "down", 6)`. The enrichment plot of the Coagulation set is shown in @fig-gsea-es-coag.
+- **GO Biological Process** (@fig-gsea-gobp, @fig-ridge-gobp): `r top_gsea("GO_BP", "down", 6)`.
+- **GO Molecular Function** (@fig-gsea-gomf): `r top_gsea("GO_MF", "down", 4)`. **GO Cellular Component** (@fig-gsea-gocc): `r top_gsea("GO_CC", "down", 4)`.
+- **Reactome** (@fig-gsea-reactome): `r top_gsea("Reactome", "down", 6)`. **KEGG** (@fig-gsea-kegg): `r top_gsea("KEGG", "down", 5)`.
+- **MSigDB C8 cell-type signatures** (@fig-gsea-c8) provide the clearest cell-type evidence: the gene sets with the lowest NES are platelet and megakaryocyte signatures (`r top_gsea("C8_CellType", "down", 4)`).
+
+**Up in THR.** The up-regulated signals are fewer and weaker (smaller NES and larger FDR).
+
+- **GO:** `r top_gsea("GO_BP", "up", 4)` (Biological Process); `r top_gsea("GO_MF", "up", 3)` (Molecular Function); `r top_gsea("GO_CC", "up", 3)` (Cellular Component).
+- **Reactome:** `r top_gsea("Reactome", "up", 5)`.
+- **C8:** `r top_gsea("C8_CellType", "up", 4)`. The C3 (transcription-factor targets) and C7 (immunologic signatures) collections are shown in the Supplementary Material; they are less specific and were not used for interpretation.
+
+Several down-regulated Reactome and GO sets that do not concern platelets (e.g. *Meiotic recombination*, *HCMV Early Events*, the *CHD6, CHD7, CHD8, CHD9 subfamily* and nucleosome-related GO terms) contain histone genes, which probably account for their enrichment; the leading-edge genes in the GSEA tables should be checked before interpreting them as separate biological processes.
+
+```{r}
+#| label: fig-gsea-hallmark
+#| fig-cap: "GSEA, MSigDB Hallmark: significant gene sets (FDR < 0.05, at least five leading-edge genes). X-axis, normalized enrichment score (NES); point size, leading-edge size; colour, -log10(FDR)."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_Hallmark.png")
+```
+
+```{r}
+#| label: fig-gsea-es-coag
+#| fig-cap: "GSEA enrichment plot for the Hallmark Coagulation gene set. The running enrichment score shows where the genes of the set fall in the ranked gene list (negative scores: enrichment at the HC end)."
+#| out-width: "85%"
+fig(dir_gsea, "GSEA_ES_Hallmark_HALLMARK_COAGULATION.png")
+```
+
+```{r}
+#| label: fig-gsea-gobp
+#| fig-cap: "GSEA, GO Biological Process (redundancy reduced): the ten most significant up-regulated and down-regulated terms."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_GO_BP.png")
+```
+
+```{r}
+#| label: fig-ridge-gobp
+#| fig-cap: "Ridge plot of the shrunken log2 fold change (THR vs HC) of the leading-edge genes in the top GO Biological Process terms of each direction. Labels show the number of genes per term; the white line is the median; colour, adjusted p-value."
+#| out-width: "100%"
+fig(dir_gsea, "ridgeplot_GO-BP_GSEA.png")
+```
+
+```{r}
+#| label: fig-gsea-gomf
+#| fig-cap: "GSEA, GO Molecular Function (redundancy reduced): top terms by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_GO_MF.png")
+```
+
+```{r}
+#| label: fig-gsea-gocc
+#| fig-cap: "GSEA, GO Cellular Component (redundancy reduced): top terms by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_GO_CC.png")
+```
+
+```{r}
+#| label: fig-gsea-reactome
+#| fig-cap: "GSEA, Reactome pathways: top pathways by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_Reactome.png")
+```
+
+```{r}
+#| label: fig-gsea-kegg
+#| fig-cap: "GSEA, KEGG pathways: top pathways by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_KEGG.png")
+```
+
+```{r}
+#| label: fig-gsea-c8
+#| fig-cap: "GSEA, MSigDB C8 cell-type signatures: top gene sets by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_C8_CellType.png")
+```
+
+## Integrated interpretation of enrichment results {#sec-integrated}
+
+ORA and GSEA are consistent with each other and point to the same few themes, as summarized in @tbl-themes.
+
+| Theme | Evidence | Direction in THR |
+|:----------------|:-------------------------------------|:----------------|
+| Platelet, megakaryocyte and hemostasis genes | ORA (GO, Reactome, KEGG, Hallmark); GSEA (Hallmark Coagulation, GO, Reactome, KEGG, C8 platelet and megakaryocyte signatures) | Down (strongest signal) |
+| Chromatin and histone genes | ORA (chromatin, nucleosome); GSEA (GO nucleosome terms, chromatin-related Reactome sets) | Down |
+| Extracellular matrix, adhesion, angiogenesis, EMT | ORA (ECM, integrin, Hallmark EMT and Angiogenesis); GSEA (ECM-receptor interaction, integrin signalling, Hallmark EMT and Angiogenesis) | Down (partly shared genes with the platelet granule set) |
+| TNF and death-receptor signalling, NF-kB | GSEA (Reactome, GO) | Up (weaker) |
+| NK- and T-cell signatures | GSEA (C8) | Up (weaker) |
+
+: Main themes supported by both enrichment approaches. {#tbl-themes}
+
+The dominant theme is a reduction of platelet and megakaryocyte genes. In a bulk PBMC sample this is expected to reflect a lower platelet content (platelets and platelet-derived RNA co-purify with PBMCs) rather than a change in the transcriptional program of PBMC cells; it is the same composition effect described by Wahlster et al. (2021). The Hallmark sets Angiogenesis and Epithelial-Mesenchymal Transition share genes with the platelet granule and extracellular matrix terms (for example *SPARC*), so they should not be counted as independent confirmations. The chromatin and histone signal is a separate feature that is probably driven by a block of replication-dependent histone genes; its biological meaning cannot be established from this dataset. Up-regulated signals are weak and consistent with a relative increase of lymphoid (NK, T) populations and with an inflammatory component (TNF, NF-kB), but they are exploratory.
+
+# Biological Interpretation and Discussion
+
+## Main transcriptional findings
+
+The analysis reproduces the central observation of the original study. *ANKRD26* is the most significantly up-regulated gene (`r sprintf("%.1f", 2^ank$log2FC_raw)`-fold at gene level), while *WAC* and the other genes of the locus are unchanged, which is compatible with an effect restricted to *ANKRD26* through the WAC promoter, as proposed by the authors. The gene-level fold change is lower than the \~50-fold reported for the exons retained in the fusion because the whole gene, including exons not involved in the fusion, is counted. Beyond *ANKRD26*, the transcriptome of affected PBMCs is dominated by a loss of platelet- and megakaryocyte-related transcripts: `r n_down` of the `r n_deg` DEGs are down-regulated, and the top down-regulated genes include well-known platelet genes (@tbl-top-genes).
+
+## Relevant biological processes and pathways
+
+Hemostasis, coagulation, wound healing, platelet activation and degranulation, and platelet alpha granule components are the most consistent processes across ORA and GSEA. Together with the C8 cell-type signatures, this is the transcriptional footprint of a platelet-poor sample. The mild changes in myeloid or lymphoid signatures, in TNF/NF-kB signalling and in extracellular matrix genes are less robust. Histone and chromatin terms need confirmation, because they are driven by a small set of highly homologous genes.
+
+## Candidate genes and pathway characterization
+
+*ANKRD26* is the only gene whose change can be linked to the known mechanism (fusion-driven overexpression) (@tbl-locus, @fig-ankrd26-wac). Among the other top genes (@tbl-top-genes), the down-regulated ones (e.g. platelet and megakaryocyte genes such as `r paste(head(plt_deg$SYMBOL[plt_deg$significance == "Down in THR"], 6), collapse = ", ")`) are consistent with the composition effect and several of them also appear among the platelet-related core genes shown by the original study (Wahlster et al., 2021, Fig. S2C). The up-regulated gene *`r top_up_symbol`* has no recognized link to the phenotype in this dataset, and its relevance cannot be inferred from the present analysis. Candidate genes should not be prioritized for functional follow-up without evidence that the change is cell-intrinsic.
+
+## Comparison with published evidence {#sec-comparison}
+
+@tbl-comparison compares the main findings of Wahlster et al. (2021) with this analysis. The central result (*ANKRD26* up, locus genes unchanged) and the platelet signature are reproduced. The up-regulated myeloid signatures have the same direction in the GO Biological Process results but are not significant here.
+
+```{r}
+#| label: tbl-comparison
+#| tbl-cap: "Comparison of the findings of the original study with this analysis."
+cmp <- data.frame(
+  Finding = c("ANKRD26 expression",
+              "WAC and other genes of the locus",
+              "Platelet activation (GO BP)",
+              "Platelet aggregation (GO BP)",
+              "Myeloid leukocyte activation (GO BP)",
+              "Leukocyte differentiation (GO BP)",
+              "Response to chemokine (GO BP)"),
+  `Original study` = c("Up-regulated, among the most overexpressed genes; about 50-fold for exons in the fusion (Fig. 2D-E)",
+                       "No significant change (Fig. 2D-E)",
+                       "Platelet-associated sets down (Fig. S2B-C)",
+                       "Platelet-associated sets down (Fig. S2B-C)",
+                       "Myeloid-associated sets up (Fig. S2B, D)",
+                       "Up (Fig. S2B)",
+                       "Down (Fig. S2B)"),
+  `This analysis` = c(sprintf("log2FC %.2f (%.1f-fold at gene level); FDR %s; rank %d", ank$log2FC_shrunk, 2^ank$log2FC_raw, fmt_p(ank$padj), ank_rank),
+                      sprintf("WAC log2FC %.2f, FDR %s; %d of %d other genes significant", wac$log2FC_shrunk, fmt_p(wac$padj), n_locus_sig, n_locus_other),
+                      go_result("platelet activation"),
+                      go_result("platelet aggregation"),
+                      go_result("myeloid leukocyte activation"),
+                      go_result("leukocyte differentiation"),
+                      go_result("response to chemokine")),
+  Concordance = c(if (ank$padj < 0.05 && ank$log2FC_shrunk > 0) "Concordant" else "Discordant",
+                  if (wac$padj >= 0.05 && n_locus_sig == 0) "Concordant" else "Partly concordant",
+                  go_concordance("platelet activation", -1),
+                  go_concordance("platelet aggregation", -1),
+                  go_concordance("myeloid leukocyte activation", 1),
+                  go_concordance("leukocyte differentiation", 1),
+                  go_concordance("response to chemokine", -1)),
+  check.names = FALSE)
+kable(cmp, align = "llll")
+```
+
+# Limitations and Considerations {#sec-limitations}
+
+Several limitations should be considered when interpreting the results of this analysis.
+
+**Limited sample size**
+
+The dataset comprises six samples (three affected individuals and three healthy controls). The small sample size reduces statistical power, increases the uncertainty of variance estimates and limits the generalizability of the findings. Pathway results in particular are exploratory.
+
+**Family-related samples**
+
+The three affected individuals belong to the same family (a mother and her two daughters). The observed differences may partly reflect a shared genetic background rather than the disease alone, and the samples are not independent. The healthy controls are unrelated.
+
+**Sex confounding and unreported age**
+
+The affected individuals are female, and the expression of Y-linked genes and *XIST* indicates that the controls are male. Sex is therefore completely confounded with condition and cannot be modelled. Genes on chromosomes X and Y were excluded, which removes genuine X-linked signals and does not eliminate autosomal genes that differ between sexes. The age of the controls is not reported (the affected individuals were 43 to 75 years old), so age cannot be assessed either.
+
+**Cellular composition of PBMC samples**
+
+Bulk RNA-seq of PBMCs mixes several cell populations and may include platelets. The strongest signal in this dataset is the loss of platelet and megakaryocyte transcripts, which is compatible with a lower platelet content in thrombocytopenic individuals and not necessarily with a change in the transcriptional program of PBMCs. Without cell counts or deconvolution, expression changes cannot be attributed to cell-intrinsic regulation. 
+
+**Heterogeneity within the affected group**
+
+PCA and correlation clustering place one affected sample (GSM5070742) close to the controls, which indicates that the samples are not homogeneous. With three samples per group, this heterogeneity affects the power and stability of the results.
+
+# Conclusions
+
+- The analysis reproduces the central finding of the original study: *ANKRD26* is the most significantly up-regulated gene (`r sprintf("%.1f", 2^ank$log2FC_raw)`-fold at gene level), while *WAC* and the other genes of the locus are unchanged.
+- The PBMC transcriptome of affected individuals is dominated by a loss of platelet- and megakaryocyte-related genes, supported by ORA, GSEA and cell-type signatures. This is compatible with a composition effect, as proposed by the original authors, and does not necessarily indicate changes in gene regulation within PBMCs.
+- Secondary signals (histone and chromatin genes, extracellular matrix, TNF/NF-kB, NK and T cells) are weaker or driven by few genes and should be considered exploratory. The myeloid signature of the original study shows the same direction but is not significant.
+- `r if (!mapk_sig) "No transcriptional evidence of MAPK/ERK activation was found in PBMCs." else "MAPK-related gene sets were significant in PBMCs (see Results)."`
+- Results are limited by the sample size (n = 3 per group), the relatedness of the affected individuals, the confounding of sex with condition and the unreported age of the controls.
+
+**Recommended follow-up analyses**
+
+1.  Estimate cell composition (deconvolution) or use cell counts, if available, to separate composition effects from cell-intrinsic regulation.
+2.  Validate the findings in larger cohorts matched for sex and age, with a design that allows covariate adjustment.
+
+# Reproducibility and Data Availability
+
+The RNA-seq dataset analyzed in this project is publicly available from the NCBI Gene Expression Omnibus (GEO) under accession number GSE166409.
+
+The analysis was performed with R and Bioconductor. Package versions are recorded in the `renv.lock` file, and a `sessionInfo` file is written by each script to `results/logs/`. The analysis is organized as an R project with four scripts run in sequence, which read the output of the previous step:
+
+1.  `01-DEG_v2.R`: metadata, quality control, exploratory analysis and differential expression.
+2.  `02-ORA_v2.R`: over-representation analysis.
+3.  `03-GSEA_v2.R`: gene set enrichment analysis.
+4.  `04-Advanced_analysis.R`: genes of interest, locus genes, ridge plot and comparison with the original study.
+
+Project structure:
+
+```         
+project/
+|-- data/               raw count matrix (GEO)
+|-- SetupEnvironment/   paths, packages, seed, helper functions, configuration
+|-- scripts/            scripts of the analysis
+|-- results/
+|   |-- plots/          QC, EDA, DEG, ORA, GSEA
+|   |-- tables/         DEG, QC, ORA_results, GSEA_results
+|   `-- logs/           session information of each script
+|-- report/             this report (Quarto)
+`-- renv.lock
+```
+
+To reproduce the analysis, restore the environment with `renv::restore()`, run the four scripts in order from a clean R session (all parameters, thresholds and the seed are defined in `SetupEnvironment/04_config.R`) and render this report with Quarto.
+
+The following resources are associated with this project:
+
+- **GEO accession:** GSE166409
+- **Organism:** Homo sapiens
+- **Reference genome:** GRCh38.p13
+- **Gene annotation:** NCBI (Entrez Gene identifiers)
+- **Analysis framework:** R and Bioconductor
+- **Environment management:** renv
+- **Code and project access:** https://github.com/DaviMacca08/bulk-rnaseq-GSE166409
+
+# References
+
+**Primary study and data**
+
+- Wahlster L, Verboon JM, Ludwig LS, et al. (2021). Familial thrombocytopenia due to a complex structural variant resulting in a WAC-ANKRD26 fusion transcript. *Journal of Experimental Medicine* 218(6):e20210444. https://doi.org/10.1084/jem.20210444
+- Barrett T, Wilhite SE, Ledoux P, et al. (2013). NCBI GEO: archive for functional genomics data sets - update. *Nucleic Acids Research* 41:D991-D995. https://doi.org/10.1093/nar/gks1193
+- Davis S, Meltzer PS (2007). GEOquery: a bridge between the Gene Expression Omnibus (GEO) and BioConductor. *Bioinformatics* 23(14):1846-1847. https://doi.org/10.1093/bioinformatics/btm254
+
+**Differential expression analysis**
+
+- Love MI, Huber W, Anders S (2014). Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. *Genome Biology* 15:550. https://doi.org/10.1186/s13059-014-0550-8
+- Zhu A, Ibrahim JG, Love MI (2019). Heavy-tailed prior distributions for sequence count data: removing the noise and preserving large differences. *Bioinformatics* 35(12):2084-2092. https://doi.org/10.1093/bioinformatics/bty895
+
+**Functional enrichment and gene sets**
+
+- Wu T, Hu E, Xu S, et al. (2021). clusterProfiler 4.0: a universal enrichment tool for interpreting omics data. *The Innovation* 2(3):100141. https://doi.org/10.1016/j.xinn.2021.100141
+- Yu G, Wang LG, Han Y, He QY (2012). clusterProfiler: an R package for comparing biological themes among gene clusters. *OMICS* 16(5):284-287. https://doi.org/10.1089/omi.2011.0118
+- Yu G, He QY (2016). ReactomePA: an R/Bioconductor package for reactome pathway analysis and visualization. *Molecular BioSystems* 12:477-479. https://doi.org/10.1039/C5MB00663E
+- Subramanian A, Tamayo P, Mootha VK, et al. (2005). Gene set enrichment analysis: a knowledge-based approach for interpreting genome-wide expression profiles. *PNAS* 102(43):15545-15550. https://doi.org/10.1073/pnas.0506580102
+- Korotkevich G, Sukhov V, Budin N, et al. (2021). Fast gene set enrichment analysis. *bioRxiv*. https://doi.org/10.1101/060012
+- Liberzon A, Birger C, Thorvaldsdottir H, et al. (2015). The Molecular Signatures Database Hallmark gene set collection. *Cell Systems* 1(6):417-425. https://doi.org/10.1016/j.cels.2015.12.004
+- Ashburner M, Ball CA, Blake JA, et al. (2000). Gene Ontology: tool for the unification of biology. *Nature Genetics* 25:25-29. https://doi.org/10.1038/75556
+- Kanehisa M, Goto S (2000). KEGG: Kyoto Encyclopedia of Genes and Genomes. *Nucleic Acids Research* 28(1):27-30. https://doi.org/10.1093/nar/28.1.27
+
+**Visualization**
+
+- Gu Z, Eils R, Schlesner M (2016). Complex heatmaps reveal patterns and correlations in multidimensional genomic data. *Bioinformatics* 32(18):2847-2849. https://doi.org/10.1093/bioinformatics/btw313
+- Wickham H (2016). *ggplot2: Elegant Graphics for Data Analysis*. Springer, New York.
+
+# Supplementary Material {.unnumbered}
+
+```{r}
+#| label: fig-s-cluster
+#| fig-cap: "Supplementary figure. Hierarchical clustering of the samples (Euclidean distance, average linkage, blind VST)."
+#| out-width: "90%"
+fig(dir_eda, "hierarchical_clustering.png")
+```
+
+```{r}
+#| label: fig-s-dispersion
+#| fig-cap: "Supplementary figure. DESeq2 dispersion estimates: gene-wise estimates (black), fitted trend (red) and final moderated estimates (blue)."
+#| out-width: "85%"
+fig(dir_qc, "dispersion_estimates.png")
+```
+
+```{r}
+#| label: fig-s-pvalue
+#| fig-cap: "Supplementary figure. Distribution of raw p-values from the differential expression analysis."
+#| out-width: "75%"
+fig(dir_qc, "pvalue_histogram.png")
+```
+
+```{r}
+#| label: fig-gsea-c3
+#| fig-cap: "Supplementary figure. GSEA, MSigDB C3 (transcription-factor targets, GTRD): top gene sets by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_C3_TFT_GTRD.png")
+```
+
+```{r}
+#| label: fig-gsea-c7
+#| fig-cap: "Supplementary figure. GSEA, MSigDB C7 (immunologic signatures): top gene sets by direction."
+#| out-width: "100%"
+fig(dir_gsea, "GSEA_C7_immune.png")
+```

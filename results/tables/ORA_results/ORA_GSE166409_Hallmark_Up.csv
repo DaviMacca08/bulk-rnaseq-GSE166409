@@ -1,0 +1,2 @@
+"ID","Description","GeneRatio","BgRatio","RichFactor","FoldEnrichment","oddsRatio","zScore","pvalue","p.adjust","qvalue","geneID","Count","SetSize","DESize","UniverseSize"
+"HALLMARK_GLYCOLYSIS","Glycolysis","6/29","153/3424",0.0392156862745098,4.63015551048005,5.7639751552795,4.245347378901,0.00145803360047518,0.0422829744137802,0.0383693052756626,"DSC2/LDHC/PPFIA4/IDUA/NOL3/ADORA2B",6,153,29,3424
